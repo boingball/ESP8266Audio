@@ -91,6 +91,10 @@ static const int invQuant4[16] PROGMEM = {
                 to ensure no intermediate overflow in all-pole filter, set
                   FBITS_LPC_COEFS such that number of guard bits >= log2(max order)
  **************************************************************************************/
+static int TNSMulShift32(int x, int y);
+static int TNSQ20ToInt(long long v);
+static int TNSClipQ20ToInt(long long v);
+
 static void DecodeLPCCoefs(int order, int res, signed char *filtCoef, int *a, int *b) {
     int i, m, t;
     const int *invQuantTab;
@@ -106,7 +110,7 @@ static void DecodeLPCCoefs(int order, int res, signed char *filtCoef, int *a, in
     for (m = 0; m < order; m++) {
         t = invQuantTab[filtCoef[m] & 0x0f];	/* t = Q31 */
         for (i = 0; i < m; i++) {
-            b[i] = a[i] - (MULSHIFT32(t, a[m - i - 1]) << 1);
+            b[i] = a[i] - (TNSMulShift32(t, a[m - i - 1]) << 1);
         }
         for (i = 0; i < m; i++) {
             a[i] = b[i];
@@ -135,37 +139,62 @@ static void DecodeLPCCoefs(int order, int res, signed char *filtCoef, int *a, in
                 gains 0 int bits
                 history buffer does not need to be preserved between regions
  **************************************************************************************/
+
+/*
+ * Amiga/m68k-safe TNS fixed-point helpers.
+ *
+ * Avoid endian-sensitive U64 hi32/lo32 field access and avoid left-shifting
+ * negative signed values in the Q20 accumulator path.
+ */
+static int TNSMulShift32(int x, int y)
+{
+    return (int)(((long long)x * (long long)y) >> 32);
+}
+
+static int TNSQ20ToInt(long long v)
+{
+    unsigned long long u = (unsigned long long)v;
+    return (int)(u >> FBITS_LPC_COEFS);
+}
+
+static int TNSClipQ20ToInt(long long v)
+{
+    long long hi = v >> 32;
+    int y = TNSQ20ToInt(v);
+
+    if ((hi >> 31) != (hi >> (FBITS_LPC_COEFS - 1))) {
+        y = (int)((hi >> 31) ^ 0x7fffffff);
+    }
+
+    return y;
+}
+
 static int FilterRegion(int size, int dir, int order, int *audioCoef, int *a, int *hist) {
-    int i, j, y, hi32, inc, gbMask;
-    U64 sum64;
+    int i, j, y, inc, gbMask;
+    long long sum64;
 
     /* init history to 0 every time */
     for (i = 0; i < order; i++) {
         hist[i] = 0;
     }
 
-    sum64.w64 = 0;     /* avoid warning */
     gbMask = 0;
     inc = (dir ? -1 : 1);
     do {
-        /* sum64 = a0*y[n] = 1.0*y[n] */
+        /* sum64 = a0*y[n] = 1.0*y[n], in Q(FBITS_LPC_COEFS).
+         * Use multiply instead of left-shifting a possibly negative int.
+         */
         y = *audioCoef;
-        sum64.r.hi32 = y >> (32 - FBITS_LPC_COEFS);
-        sum64.r.lo32 = y << FBITS_LPC_COEFS;
+        sum64 = (long long)y * (1LL << FBITS_LPC_COEFS);
 
         /* sum64 += (a1*y[n-1] + a2*y[n-2] + ... + a[order-1]*y[n-(order-1)]) */
         for (j = order - 1; j > 0; j--) {
-            sum64.w64 = MADD64(sum64.w64, hist[j], a[j]);
+            sum64 += (long long)hist[j] * (long long)a[j];
             hist[j] = hist[j - 1];
         }
-        sum64.w64 = MADD64(sum64.w64, hist[0], a[0]);
-        y = (sum64.r.hi32 << (32 - FBITS_LPC_COEFS)) | (sum64.r.lo32 >> FBITS_LPC_COEFS);
+        sum64 += (long long)hist[0] * (long long)a[0];
 
-        /* clip output (rare) */
-        hi32 = sum64.r.hi32;
-        if ((hi32 >> 31) != (hi32 >> (FBITS_LPC_COEFS - 1))) {
-            y = (hi32 >> 31) ^ 0x7fffffff;
-        }
+        y = TNSClipQ20ToInt(sum64);
 
         hist[0] = y;
         *audioCoef = y;
@@ -190,6 +219,11 @@ static int FilterRegion(int size, int dir, int order, int *audioCoef, int *a, in
     Return:      0 if successful, -1 if error
  **************************************************************************************/
 int TNSFilter(AACDecInfo *aacDecInfo, int ch) {
+#ifdef AMIGA_AAC_DISABLE_TNS_TEST
+    (void)aacDecInfo;
+    (void)ch;
+    return 0;
+#endif
     int win, winLen, nWindows, nSFB, filt, bottom, top, order, maxOrder, dir;
     int start, end, size, tnsMaxBand, numFilt, gbMask;
     int *audioCoef;
