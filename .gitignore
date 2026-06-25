@@ -1,0 +1,7 @@
+
+# Amiga/local build artefacts
+*.o
+*.decoder
+*.map
+*.fastexp
+*:Zone.Identifier
