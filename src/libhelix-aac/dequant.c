@@ -45,6 +45,19 @@
 
 #include "coder.h"
 #include "assembly.h"
+#include "amiga_m68k_aac.h"
+
+/*  Stage 2: AAC dequant path.
+    The inverse-quantisation inner loop evaluates a fixed-point polynomial and
+    applies scalefactors via repeated MULSHIFT32. When AMIGA_M68K_ASM_AAC_DEQUANT
+    is enabled on a 68020+ target this routes those multiplies to the
+    single-instruction MULS.L helper instead of the libgcc 64-bit multiply.
+    Bit-exact and big-endian safe (the helper only touches data registers), so
+    dequantised values are unchanged. Portable C MULSHIFT32 is used otherwise. */
+#if defined(AMIGA_M68K_ASM_AAC_DEQUANT) && defined(AAC_M68K_HAVE_ASM)
+#undef MULSHIFT32
+#define MULSHIFT32(x, y)	AAC_M68K_MULSHIFT32((x), (y))
+#endif
 
 #define	SF_OFFSET			100
 

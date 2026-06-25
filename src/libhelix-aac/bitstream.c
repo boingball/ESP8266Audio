@@ -44,6 +44,7 @@
  **************************************************************************************/
 
 #include "bitstream.h"
+#include "amiga_m68k_aac.h"
 
 /**************************************************************************************
     Function:    SetBitstreamPointer
@@ -85,11 +86,22 @@ void SetBitstreamPointer(BitStreamInfo *bsi, int nBytes, unsigned char *buf) {
 static __inline void RefillBitstreamCache(BitStreamInfo *bsi) {
     int nBytes = bsi->nBytes;
     if (nBytes >= 4) {
+#if defined(AMIGA_M68K_ASM_AAC_HUFFMAN) && defined(AAC_M68K_BIG_ENDIAN_LOAD)
+        /*  Stage 4: AAC Huffman / bitstream decode.
+            On big-endian 68020+ the four-byte big-endian refill below is just a
+            single (possibly misaligned) 32-bit load. This is exactly the value
+            the portable shift/OR sequence produces, so it is bit-exact and does
+            not change ADTS AAC-LC decoding. 68000/68010 and all other targets
+            keep the portable byte-wise path. */
+        bsi->iCache = AAC_M68K_LOAD_BE32(bsi->bytePtr);
+        bsi->bytePtr += 4;
+#else
         /* optimize for common case, independent of machine endian-ness */
         bsi->iCache  = (*bsi->bytePtr++) << 24;
         bsi->iCache |= (*bsi->bytePtr++) << 16;
         bsi->iCache |= (*bsi->bytePtr++) <<  8;
         bsi->iCache |= (*bsi->bytePtr++);
+#endif
 
         bsi->cachedBits = 32;
         bsi->nBytes -= 4;

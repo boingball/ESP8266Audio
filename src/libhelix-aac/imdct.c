@@ -45,6 +45,20 @@
 
 #include "coder.h"
 #include "assembly.h"
+#include "amiga_m68k_aac.h"
+
+/*  Stage 1: AAC IMDCT / transform path.
+    When AMIGA_M68K_ASM_AAC_IMDCT is enabled on a 68020+ target, route the
+    inner-loop signed multiply-accumulate primitive (MULSHIFT32) used by the
+    windowing / overlap-add loops to the single-instruction MULS.L helper.
+    The helper is bit-exact, so output format and values are unchanged. When
+    the flag (or the asm target) is absent, the portable C MULSHIFT32 from
+    assembly.h is used unchanged.
+*/
+#if defined(AMIGA_M68K_ASM_AAC_IMDCT) && defined(AAC_M68K_HAVE_ASM)
+#undef MULSHIFT32
+#define MULSHIFT32(x, y)	AAC_M68K_MULSHIFT32((x), (y))
+#endif
 
 #define RND_VAL		(1 << (FBITS_OUT_IMDCT-1))
 

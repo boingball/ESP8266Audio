@@ -46,6 +46,16 @@
 
 #include "coder.h"
 #include "assembly.h"
+#include "amiga_m68k_aac.h"
+
+/*  Stage 1: AAC IMDCT / transform path (radix FFT butterflies feeding the
+    type-IV DCT). See imdct.c for rationale; MULSHIFT32 is routed to the
+    MULS.L helper when AMIGA_M68K_ASM_AAC_IMDCT is enabled on a 68020+ target.
+    Bit-exact, so FFT output is unchanged. */
+#if defined(AMIGA_M68K_ASM_AAC_IMDCT) && defined(AAC_M68K_HAVE_ASM)
+#undef MULSHIFT32
+#define MULSHIFT32(x, y)	AAC_M68K_MULSHIFT32((x), (y))
+#endif
 
 #define NUM_FFT_SIZES	2
 static const int nfftTab[NUM_FFT_SIZES] PROGMEM = {64, 512};
