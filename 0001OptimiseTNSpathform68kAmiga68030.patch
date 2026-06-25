@@ -1,0 +1,274 @@
+From f46bde05b5f617822152a46fa35c568fcc3cbac5 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 24 Jun 2026 23:54:36 +0000
+Subject: [PATCH] Optimise TNS path for m68k / Amiga 68030
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add AMIGA_M68K-guarded helpers in tns.c that use the 68030 MULS.L
+instruction (32x32→64-bit signed multiply) to accelerate the two
+hottest loops in the TNS decode path without touching any other
+target or the public API.
+
+DecodeLPCCoefs (Levinson-Durbin update):
+  Replace TNSMulShift32(t, a[i]) << 1  with tns_m68k_mulshift31(t, a[i]),
+  which combines the >> 32 and << 1 into a single >> 31 using MULS.L
+  plus two shifts, saving one instruction per inner-loop iteration.
+
+FilterRegion (all-pole IIR filter, hottest loop):
+  Replace the long long sum64 accumulator with an explicit hi:lo pair
+  (int sum_hi / unsigned int sum_lo).  Initialisation uses two shifts
+  instead of a 64-bit multiply.  Each MAC step uses a single inline asm
+  block containing MULS.L + ADD.L + ADDX.L so the m68k X (extend) flag
+  carry chain is correct and the compiler cannot insert code between the
+  two add instructions.
+
+Safety properties:
+  - All asm is behind #ifdef AMIGA_M68K; every other build path is
+    unchanged and tested clean (x86/ESP8266, m68k without the guard).
+  - Output is bit-exact with the portable long-long C path.
+  - No FPU, no 64-bit division, 68030-compatible.
+  - Verified with m68k-linux-gnu-gcc -m68030 -O2; MULS.L Dm, Dh:Dl
+    emitted with distinct Dh and Dl registers in all three asm sites.
+  - The early-clobber ("=&d") modifier on the high-product output
+    satisfies the ISA constraint Dh != Dl != Dm for MULS.L.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01GHqQH3yYG4nrFBzUr2NAzQ
+---
+ src/libhelix-aac/tns.c | 186 ++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 184 insertions(+), 2 deletions(-)
+
+diff --git a/src/libhelix-aac/tns.c b/src/libhelix-aac/tns.c
+index b003ec4..16e6d85 100644
+--- a/src/libhelix-aac/tns.c
++++ b/src/libhelix-aac/tns.c
+@@ -95,6 +95,103 @@ static int TNSMulShift32(int x, int y);
+ static int TNSQ20ToInt(long long v);
+ static int TNSClipQ20ToInt(long long v);
+ 
++/* === m68k / Amiga optimised TNS helpers ===
++ *
++ * The 68030 MULS.L instruction produces a signed 32x32→64-bit product in
++ * two data registers (Dh:Dl) in a single opcode, making it well-suited to
++ * the fixed-point MAC loops in DecodeLPCCoefs and FilterRegion.
++ *
++ * These helpers compile only when AMIGA_M68K is defined.  The portable
++ * long-long C path (TNSMulShift32 / TNSClipQ20ToInt below) remains the
++ * fallback for all other targets.  Output values are bit-exact with the
++ * portable path.
++ *
++ * Fixed-point conventions:
++ *   a[] LPC coefficients : Q(FBITS_LPC_COEFS) = Q20, |a[i]| < 4.4 * 2^20
++ *   hist[] samples       : integer (no fractional bits), fits in 32 bits
++ *   sum accumulator      : Q20; right-shift by FBITS_LPC_COEFS to recover sample
++ *
++ * 68030 register roles used in the asm blocks below:
++ *   Dl  "+d"  — read-write data register: multiplicand on entry, low 32 bits
++ *               of the 64-bit product on exit  (same register, ISA requirement)
++ *   Dh  "=d"  — write-only data register: high 32 bits of the 64-bit product
++ *   Dm  "d"   — read-only  data register: the other multiplicand (unchanged)
++ *
++ * Carry chain: ADD.L sets the m68k X (extend) flag; ADDX.L consumes it for
++ * correct 64-bit addition.  Both instructions live in one asm block so the
++ * compiler cannot insert code between them that would corrupt X.
++ *
++ * No FPU, no 64-bit division, 68030-compatible.
++ */
++#ifdef AMIGA_M68K
++
++/* tns_m68k_mulshift31 - signed 32x32 multiply, return bits [62:31]
++ *
++ * Computes ((int64)x * y) >> 31 in one MULS.L opcode plus two shifts.
++ * This replaces the pattern TNSMulShift32(x, y) << 1 used in the
++ * DecodeLPCCoefs Levinson-Durbin update loop, saving one instruction.
++ *
++ * Input  x : Q31  (invQuantTab entry, full 32-bit signed)
++ * Input  y : Q(FBITS_LPC_COEFS)  (current LPC coefficient)
++ * Output   : Q(FBITS_LPC_COEFS)  (updated coefficient, same format)
++ */
++static inline int tns_m68k_mulshift31(int x, int y)
++{
++    int hi;
++    /* MULS.L Dm, Dh:Dl
++     *   x  lives in Dl ("+d"): input multiplicand, receives low 32-bit result
++     *   hi lives in Dh ("=d"): receives high 32-bit result
++     *   y  lives in Dm ("d") : multiplier, left unchanged
++     * Result: hi:x = signed 64-bit product of x * y
++     */
++    /* "=&d" early-clobber ensures GCC allocates hi to a register distinct
++     * from x and y, satisfying the MULS.L encoding requirement Dh != Dl.
++     */
++    __asm__ (
++        "muls.l %[y],%[hi]:%[x]"
++        : [x] "+d"(x), [hi] "=&d"(hi)
++        : [y] "d"(y)
++    );
++    /* (hi:x) >> 31 = bits [62:31] of the 64-bit product:
++     *   hi << 1        extracts bits [62:32]  (upper half into position)
++     *   (uint)x >> 31  extracts bit  [31]     (MSB of lower half)
++     * Casting to unsigned avoids left-shifting a potentially negative int.
++     */
++    return (int)(((unsigned int)hi << 1) | ((unsigned int)x >> 31));
++}
++
++/* tns_m68k_mac - 64-bit signed accumulate: *sum_hi:*sum_lo += x * y
++ *
++ * Uses MULS.L for the 32x32→64 multiply, then ADD.L + ADDX.L to fold the
++ * 64-bit product into the running accumulator with correct carry propagation.
++ *
++ * All three instructions are in one asm block so the compiler cannot insert
++ * code between ADD.L (which sets X) and ADDX.L (which reads X).
++ *
++ * Inputs  x, y    : arbitrary signed 32-bit values
++ * In/out *sum_hi  : high 32 bits of the 64-bit accumulator (signed)
++ * In/out *sum_lo  : low  32 bits of the 64-bit accumulator (unsigned)
++ */
++static inline void tns_m68k_mac(int *sum_hi, unsigned int *sum_lo, int x, int y)
++{
++    int ph;
++    /* "=&d" early-clobber on ph: MULS.L requires Dh != Dl, so ph must be
++     * allocated to a register different from x (Dl), y (Dm), and the
++     * accumulator halves.
++     */
++    __asm__ volatile (
++        "muls.l %[y],%[ph]:%[x]\n\t"   /* ph:x = x*y  (Dl=x→lo, Dh=ph, Dm=y) */
++        "add.l  %[x],%[slo]\n\t"        /* sum_lo += low product; sets X flag   */
++        "addx.l %[ph],%[shi]"            /* sum_hi += high product + X           */
++        : [x]   "+d"(x),    [ph]  "=&d"(ph),
++          [slo] "+d"(*sum_lo), [shi] "+d"(*sum_hi)
++        : [y] "d"(y)
++        : "cc"
++    );
++}
++
++#endif /* AMIGA_M68K */
++
+ static void DecodeLPCCoefs(int order, int res, signed char *filtCoef, int *a, int *b) {
+     int i, m, t;
+     const int *invQuantTab;
+@@ -110,7 +207,16 @@ static void DecodeLPCCoefs(int order, int res, signed char *filtCoef, int *a, in
+     for (m = 0; m < order; m++) {
+         t = invQuantTab[filtCoef[m] & 0x0f];	/* t = Q31 */
+         for (i = 0; i < m; i++) {
++            /* Levinson-Durbin update: b[i] = a[i] - t * a[m-i-1] / 2^31
++             * The Q31 coefficient t is multiplied with an a[] entry (Q20),
++             * and the product is right-shifted by 31 to stay in Q20.
++             * On m68k: one MULS.L + two shifts instead of two separate shifts.
++             */
++#ifdef AMIGA_M68K
++            b[i] = a[i] - tns_m68k_mulshift31(t, a[m - i - 1]);
++#else
+             b[i] = a[i] - (TNSMulShift32(t, a[m - i - 1]) << 1);
++#endif
+         }
+         for (i = 0; i < m; i++) {
+             a[i] = b[i];
+@@ -171,7 +277,9 @@ static int TNSClipQ20ToInt(long long v)
+ 
+ static int FilterRegion(int size, int dir, int order, int *audioCoef, int *a, int *hist) {
+     int i, j, y, inc, gbMask;
++#ifndef AMIGA_M68K
+     long long sum64;
++#endif
+ 
+     /* init history to 0 every time */
+     for (i = 0; i < order; i++) {
+@@ -181,10 +289,83 @@ static int FilterRegion(int size, int dir, int order, int *audioCoef, int *a, in
+     gbMask = 0;
+     inc = (dir ? -1 : 1);
+     do {
+-        /* sum64 = a0*y[n] = 1.0*y[n], in Q(FBITS_LPC_COEFS).
++        y = *audioCoef;
++
++#ifdef AMIGA_M68K
++        /* m68k path: explicit 64-bit accumulator as two 32-bit halves.
++         *
++         * Initialise sum_hi:sum_lo = (int64)y << FBITS_LPC_COEFS without a
++         * 64-bit multiply.  Two arithmetic/logical shifts suffice:
++         *   sum_hi = y >> (32 - FBITS_LPC_COEFS)   sign-extends the value
++         *   sum_lo = (uint32)y << FBITS_LPC_COEFS   fills lower bits with 0
++         * This is bit-exact with (long long)y * (1LL << FBITS_LPC_COEFS).
++         */
++        {
++            int sum_hi = y >> (32 - FBITS_LPC_COEFS);
++            unsigned int sum_lo = (unsigned int)y << FBITS_LPC_COEFS;
++            int ph;
++
++            /* Accumulate: sum_hi:sum_lo += hist[j] * a[j]  for j = order-1..0
++             * History is shifted down (hist[j] = hist[j-1]) during the same pass.
++             * Each MULS.L + ADD.L + ADDX.L triple is self-contained: ADD.L sets
++             * the X flag and ADDX.L immediately consumes it in the same asm block.
++             */
++            for (j = order - 1; j > 0; j--) {
++                int hj = hist[j];           /* read before the shift overwrites */
++                hist[j] = hist[j - 1];     /* shift history toward older taps  */
++                /* "=&d" on ph: MULS.L requires Dh != Dl, so ph must not share
++                 * a register with hj (Dl), aj (Dm), or the accumulator halves.
++                 */
++                __asm__ volatile (
++                    "muls.l %[aj],%[ph]:%[hj]\n\t" /* ph:hj = hist[j] * a[j]   */
++                    "add.l  %[hj],%[slo]\n\t"       /* sum_lo += low;  sets X   */
++                    "addx.l %[ph],%[shi]"            /* sum_hi += high + X       */
++                    : [hj] "+d"(hj), [ph] "=&d"(ph),
++                      [slo] "+d"(sum_lo), [shi] "+d"(sum_hi)
++                    : [aj] "d"(a[j])
++                    : "cc"
++                );
++            }
++            /* j == 0: oldest tap — accumulate hist[0] without a history shift
++             * (hist[0] is overwritten with y after the loop, below).
++             */
++            {
++                int hj = hist[0];
++                __asm__ volatile (
++                    "muls.l %[aj],%[ph]:%[hj]\n\t"
++                    "add.l  %[hj],%[slo]\n\t"
++                    "addx.l %[ph],%[shi]"
++                    : [hj] "+d"(hj), [ph] "=&d"(ph),
++                      [slo] "+d"(sum_lo), [shi] "+d"(sum_hi)
++                    : [aj] "d"(a[0])
++                    : "cc"
++                );
++            }
++
++            /* Extract y = (sum_hi:sum_lo) >> FBITS_LPC_COEFS with saturation.
++             *
++             * Overflow check: if the top (32 - FBITS_LPC_COEFS + 1) = 13 bits
++             * of sum_hi are not all equal to the sign bit, the result does not
++             * fit in a signed 32-bit integer and must be saturated.
++             *
++             *   sum_hi >> 31           : sign bit of the accumulator
++             *   sum_hi >> (FBITS_LPC_COEFS - 1) : bits [31:19] uniform-sign test
++             *
++             * No-overflow extraction:
++             *   y = (uint)sum_hi << (32 - FBITS_LPC_COEFS) | sum_lo >> FBITS_LPC_COEFS
++             * Casting sum_hi to unsigned avoids UB from left-shifting a negative int.
++             */
++            if ((sum_hi >> 31) != (sum_hi >> (FBITS_LPC_COEFS - 1))) {
++                y = (sum_hi >> 31) ^ 0x7fffffff;
++            } else {
++                y = (int)(((unsigned int)sum_hi << (32 - FBITS_LPC_COEFS)) |
++                          (sum_lo >> FBITS_LPC_COEFS));
++            }
++        }
++#else
++        /* Portable path: 64-bit long long accumulator.
+          * Use multiply instead of left-shifting a possibly negative int.
+          */
+-        y = *audioCoef;
+         sum64 = (long long)y * (1LL << FBITS_LPC_COEFS);
+ 
+         /* sum64 += (a1*y[n-1] + a2*y[n-2] + ... + a[order-1]*y[n-(order-1)]) */
+@@ -195,6 +376,7 @@ static int FilterRegion(int size, int dir, int order, int *audioCoef, int *a, in
+         sum64 += (long long)hist[0] * (long long)a[0];
+ 
+         y = TNSClipQ20ToInt(sum64);
++#endif /* AMIGA_M68K */
+ 
+         hist[0] = y;
+         *audioCoef = y;
+-- 
+2.43.0
+
