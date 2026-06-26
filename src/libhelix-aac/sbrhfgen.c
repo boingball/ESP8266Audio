@@ -131,12 +131,12 @@ void CVKernel1(int *XBuf, int *accBuf) {
     p22re.w64 = MADD64(p22re.w64, x0re, -x0re);
     p22re.w64 = MADD64(p22re.w64, x0im, -x0im);
 
-    accBuf[0]  = p01re.r.lo32;	accBuf[1]  = p01re.r.hi32;
-    accBuf[2]  = p01im.r.lo32;	accBuf[3]  = p01im.r.hi32;
-    accBuf[4]  = p11re.r.lo32;	accBuf[5]  = p11re.r.hi32;
-    accBuf[6]  = p12re.r.lo32;	accBuf[7]  = p12re.r.hi32;
-    accBuf[8]  = p12im.r.lo32;	accBuf[9]  = p12im.r.hi32;
-    accBuf[10] = p22re.r.lo32;	accBuf[11] = p22re.r.hi32;
+    accBuf[0]  = (int)(p01re.w64 & 0xFFFFFFFFU);	accBuf[1]  = (int)(p01re.w64 >> 32);
+    accBuf[2]  = (int)(p01im.w64 & 0xFFFFFFFFU);	accBuf[3]  = (int)(p01im.w64 >> 32);
+    accBuf[4]  = (int)(p11re.w64 & 0xFFFFFFFFU);	accBuf[5]  = (int)(p11re.w64 >> 32);
+    accBuf[6]  = (int)(p12re.w64 & 0xFFFFFFFFU);	accBuf[7]  = (int)(p12re.w64 >> 32);
+    accBuf[8]  = (int)(p12im.w64 & 0xFFFFFFFFU);	accBuf[9]  = (int)(p12im.w64 >> 32);
+    accBuf[10] = (int)(p22re.w64 & 0xFFFFFFFFU);	accBuf[11] = (int)(p22re.w64 >> 32);
 }
 #endif
 
@@ -162,59 +162,68 @@ static int CalcCovariance1(int *XBuf, int *p01reN, int *p01imN, int *p12reN, int
     U64 p01re, p01im, p12re, p12im, p11re, p22re;
 
     CVKernel1(XBuf, accBuf);
-    p01re.r.lo32 = accBuf[0];	p01re.r.hi32 = accBuf[1];
-    p01im.r.lo32 = accBuf[2];	p01im.r.hi32 = accBuf[3];
-    p11re.r.lo32 = accBuf[4];	p11re.r.hi32 = accBuf[5];
-    p12re.r.lo32 = accBuf[6];	p12re.r.hi32 = accBuf[7];
-    p12im.r.lo32 = accBuf[8];	p12im.r.hi32 = accBuf[9];
-    p22re.r.lo32 = accBuf[10];	p22re.r.hi32 = accBuf[11];
+    p01re.w64 = ((Word64)accBuf[1] << 32) | (unsigned int)accBuf[0];
+    p01im.w64 = ((Word64)accBuf[3] << 32) | (unsigned int)accBuf[2];
+    p11re.w64 = ((Word64)accBuf[5] << 32) | (unsigned int)accBuf[4];
+    p12re.w64 = ((Word64)accBuf[7] << 32) | (unsigned int)accBuf[6];
+    p12im.w64 = ((Word64)accBuf[9] << 32) | (unsigned int)accBuf[8];
+    p22re.w64 = ((Word64)accBuf[11] << 32) | (unsigned int)accBuf[10];
 
     /*  64-bit accumulators now have 2*FBITS_OUT_QMFA fraction bits
         want to scale them down to integers (32-bit signed, Q0)
          with scale factor of 2^n, n >= 0
         leave 2 GB's for calculating determinant, so take top 30 non-zero bits
     */
-    gbMask  = ((p01re.r.hi32) ^ (p01re.r.hi32 >> 31)) | ((p01im.r.hi32) ^ (p01im.r.hi32 >> 31));
-    gbMask |= ((p12re.r.hi32) ^ (p12re.r.hi32 >> 31)) | ((p12im.r.hi32) ^ (p12im.r.hi32 >> 31));
-    gbMask |= ((p11re.r.hi32) ^ (p11re.r.hi32 >> 31)) | ((p22re.r.hi32) ^ (p22re.r.hi32 >> 31));
-    if (gbMask == 0) {
-        s = p01re.r.hi32 >> 31; gbMask  = (p01re.r.lo32 ^ s) - s;
-        s = p01im.r.hi32 >> 31; gbMask |= (p01im.r.lo32 ^ s) - s;
-        s = p12re.r.hi32 >> 31; gbMask |= (p12re.r.lo32 ^ s) - s;
-        s = p12im.r.hi32 >> 31; gbMask |= (p12im.r.lo32 ^ s) - s;
-        s = p11re.r.hi32 >> 31; gbMask |= (p11re.r.lo32 ^ s) - s;
-        s = p22re.r.hi32 >> 31; gbMask |= (p22re.r.lo32 ^ s) - s;
-        z = 32 + CLZ(gbMask);
-    } else {
-        gbMask  = FASTABS(p01re.r.hi32) | FASTABS(p01im.r.hi32);
-        gbMask |= FASTABS(p12re.r.hi32) | FASTABS(p12im.r.hi32);
-        gbMask |= FASTABS(p11re.r.hi32) | FASTABS(p22re.r.hi32);
-        z = CLZ(gbMask);
-    }
+    {
+        int p01reH = (int)(p01re.w64 >> 32), p01imH = (int)(p01im.w64 >> 32);
+        int p12reH = (int)(p12re.w64 >> 32), p12imH = (int)(p12im.w64 >> 32);
+        int p11reH = (int)(p11re.w64 >> 32), p22reH = (int)(p22re.w64 >> 32);
+        unsigned int p01reL = (unsigned int)p01re.w64, p01imL = (unsigned int)p01im.w64;
+        unsigned int p12reL = (unsigned int)p12re.w64, p12imL = (unsigned int)p12im.w64;
+        unsigned int p11reL = (unsigned int)p11re.w64, p22reL = (unsigned int)p22re.w64;
 
-    n = 64 - z;	/* number of non-zero bits in bottom of 64-bit word */
-    if (n <= 30) {
-        loShift = (30 - n);
-        *p01reN = p01re.r.lo32 << loShift;	*p01imN = p01im.r.lo32 << loShift;
-        *p12reN = p12re.r.lo32 << loShift;	*p12imN = p12im.r.lo32 << loShift;
-        *p11reN = p11re.r.lo32 << loShift;	*p22reN = p22re.r.lo32 << loShift;
-        return -(loShift + 2 * FBITS_OUT_QMFA);
-    } else if (n < 32 + 30) {
-        loShift = (n - 30);
-        hiShift = 32 - loShift;
-        *p01reN = (p01re.r.hi32 << hiShift) | (p01re.r.lo32 >> loShift);
-        *p01imN = (p01im.r.hi32 << hiShift) | (p01im.r.lo32 >> loShift);
-        *p12reN = (p12re.r.hi32 << hiShift) | (p12re.r.lo32 >> loShift);
-        *p12imN = (p12im.r.hi32 << hiShift) | (p12im.r.lo32 >> loShift);
-        *p11reN = (p11re.r.hi32 << hiShift) | (p11re.r.lo32 >> loShift);
-        *p22reN = (p22re.r.hi32 << hiShift) | (p22re.r.lo32 >> loShift);
-        return (loShift - 2 * FBITS_OUT_QMFA);
-    } else {
-        hiShift = n - (32 + 30);
-        *p01reN = p01re.r.hi32 >> hiShift;	*p01imN = p01im.r.hi32 >> hiShift;
-        *p12reN = p12re.r.hi32 >> hiShift;	*p12imN = p12im.r.hi32 >> hiShift;
-        *p11reN = p11re.r.hi32 >> hiShift;	*p22reN = p22re.r.hi32 >> hiShift;
-        return (32 - 2 * FBITS_OUT_QMFA - hiShift);
+        gbMask  = (p01reH ^ (p01reH >> 31)) | (p01imH ^ (p01imH >> 31));
+        gbMask |= (p12reH ^ (p12reH >> 31)) | (p12imH ^ (p12imH >> 31));
+        gbMask |= (p11reH ^ (p11reH >> 31)) | (p22reH ^ (p22reH >> 31));
+        if (gbMask == 0) {
+            s = p01reH >> 31; gbMask  = (p01reL ^ s) - s;
+            s = p01imH >> 31; gbMask |= (p01imL ^ s) - s;
+            s = p12reH >> 31; gbMask |= (p12reL ^ s) - s;
+            s = p12imH >> 31; gbMask |= (p12imL ^ s) - s;
+            s = p11reH >> 31; gbMask |= (p11reL ^ s) - s;
+            s = p22reH >> 31; gbMask |= (p22reL ^ s) - s;
+            z = 32 + CLZ(gbMask);
+        } else {
+            gbMask  = FASTABS(p01reH) | FASTABS(p01imH);
+            gbMask |= FASTABS(p12reH) | FASTABS(p12imH);
+            gbMask |= FASTABS(p11reH) | FASTABS(p22reH);
+            z = CLZ(gbMask);
+        }
+
+        n = 64 - z;
+        if (n <= 30) {
+            loShift = (30 - n);
+            *p01reN = (int)(p01reL << loShift);	*p01imN = (int)(p01imL << loShift);
+            *p12reN = (int)(p12reL << loShift);	*p12imN = (int)(p12imL << loShift);
+            *p11reN = (int)(p11reL << loShift);	*p22reN = (int)(p22reL << loShift);
+            return -(loShift + 2 * FBITS_OUT_QMFA);
+        } else if (n < 32 + 30) {
+            loShift = (n - 30);
+            hiShift = 32 - loShift;
+            *p01reN = (p01reH << hiShift) | (int)(p01reL >> loShift);
+            *p01imN = (p01imH << hiShift) | (int)(p01imL >> loShift);
+            *p12reN = (p12reH << hiShift) | (int)(p12reL >> loShift);
+            *p12imN = (p12imH << hiShift) | (int)(p12imL >> loShift);
+            *p11reN = (p11reH << hiShift) | (int)(p11reL >> loShift);
+            *p22reN = (p22reH << hiShift) | (int)(p22reL >> loShift);
+            return (loShift - 2 * FBITS_OUT_QMFA);
+        } else {
+            hiShift = n - (32 + 30);
+            *p01reN = p01reH >> hiShift;	*p01imN = p01imH >> hiShift;
+            *p12reN = p12reH >> hiShift;	*p12imN = p12imH >> hiShift;
+            *p11reN = p11reH >> hiShift;	*p22reN = p22reH >> hiShift;
+            return (32 - 2 * FBITS_OUT_QMFA - hiShift);
+        }
     }
 
     return 0;
@@ -271,10 +280,10 @@ void CVKernel2(int *XBuf, int *accBuf) {
         XBuf += (2 * 64);
     }
 
-    accBuf[0] = p02re.r.lo32;
-    accBuf[1] = p02re.r.hi32;
-    accBuf[2] = p02im.r.lo32;
-    accBuf[3] = p02im.r.hi32;
+    accBuf[0] = (int)(p02re.w64 & 0xFFFFFFFFU);
+    accBuf[1] = (int)(p02re.w64 >> 32);
+    accBuf[2] = (int)(p02im.w64 & 0xFFFFFFFFU);
+    accBuf[3] = (int)(p02im.w64 >> 32);
 }
 #endif
 
@@ -299,43 +308,46 @@ static int CalcCovariance2(int *XBuf, int *p02reN, int *p02imN) {
     int accBuf[2 * 2];
 
     CVKernel2(XBuf, accBuf);
-    p02re.r.lo32 = accBuf[0];
-    p02re.r.hi32 = accBuf[1];
-    p02im.r.lo32 = accBuf[2];
-    p02im.r.hi32 = accBuf[3];
+    p02re.w64 = ((Word64)accBuf[1] << 32) | (unsigned int)accBuf[0];
+    p02im.w64 = ((Word64)accBuf[3] << 32) | (unsigned int)accBuf[2];
 
     /*  64-bit accumulators now have 2*FBITS_OUT_QMFA fraction bits
         want to scale them down to integers (32-bit signed, Q0)
          with scale factor of 2^n, n >= 0
         leave 1 GB for calculating determinant, so take top 30 non-zero bits
     */
-    gbMask  = ((p02re.r.hi32) ^ (p02re.r.hi32 >> 31)) | ((p02im.r.hi32) ^ (p02im.r.hi32 >> 31));
-    if (gbMask == 0) {
-        s = p02re.r.hi32 >> 31; gbMask  = (p02re.r.lo32 ^ s) - s;
-        s = p02im.r.hi32 >> 31; gbMask |= (p02im.r.lo32 ^ s) - s;
-        z = 32 + CLZ(gbMask);
-    } else {
-        gbMask  = FASTABS(p02re.r.hi32) | FASTABS(p02im.r.hi32);
-        z = CLZ(gbMask);
-    }
-    n = 64 - z;	/* number of non-zero bits in bottom of 64-bit word */
+    {
+        int p02reH = (int)(p02re.w64 >> 32), p02imH = (int)(p02im.w64 >> 32);
+        unsigned int p02reL = (unsigned int)p02re.w64, p02imL = (unsigned int)p02im.w64;
 
-    if (n <= 30) {
-        loShift = (30 - n);
-        *p02reN = p02re.r.lo32 << loShift;
-        *p02imN = p02im.r.lo32 << loShift;
-        return -(loShift + 2 * FBITS_OUT_QMFA);
-    } else if (n < 32 + 30) {
-        loShift = (n - 30);
-        hiShift = 32 - loShift;
-        *p02reN = (p02re.r.hi32 << hiShift) | (p02re.r.lo32 >> loShift);
-        *p02imN = (p02im.r.hi32 << hiShift) | (p02im.r.lo32 >> loShift);
-        return (loShift - 2 * FBITS_OUT_QMFA);
-    } else {
-        hiShift = n - (32 + 30);
-        *p02reN = p02re.r.hi32 >> hiShift;
-        *p02imN = p02im.r.hi32 >> hiShift;
-        return (32 - 2 * FBITS_OUT_QMFA - hiShift);
+        gbMask  = (p02reH ^ (p02reH >> 31)) | (p02imH ^ (p02imH >> 31));
+        if (gbMask == 0) {
+            s = p02reH >> 31; gbMask  = (p02reL ^ s) - s;
+            s = p02imH >> 31; gbMask |= (p02imL ^ s) - s;
+            z = 32 + CLZ(gbMask);
+        } else {
+            gbMask  = FASTABS(p02reH) | FASTABS(p02imH);
+            z = CLZ(gbMask);
+        }
+        n = 64 - z;
+
+        if (n <= 30) {
+            loShift = (30 - n);
+            *p02reN = (int)(p02reL << loShift);
+            *p02imN = (int)(p02imL << loShift);
+            return -(loShift + 2 * FBITS_OUT_QMFA);
+        } else if (n < 32 + 30) {
+            loShift = (n - 30);
+            hiShift = 32 - loShift;
+            *p02reN = (p02reH << hiShift) | (int)(p02reL >> loShift);
+            *p02imN = (p02imH << hiShift) | (int)(p02imL >> loShift);
+            return (loShift - 2 * FBITS_OUT_QMFA);
+        } else {
+            hiShift = n - (32 + 30);
+            *p02reN = p02reH >> hiShift;
+            *p02imN = p02imH >> hiShift;
+            return (32 - 2 * FBITS_OUT_QMFA - hiShift);
+        }
     }
 
     return 0;

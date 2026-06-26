@@ -270,8 +270,8 @@ void QMFAnalysisConv(int *cTab, int *delay, int dIdx, int *uBuf) {
         dOff += 320;
     }
 
-    uBuf[0]  = u64lo.r.hi32;
-    uBuf[32] = u64hi.r.hi32;
+    uBuf[0]  = (int)(u64lo.w64 >> 32);
+    uBuf[32] = (int)(u64hi.w64 >> 32);
     uBuf++;
     dOff--;
 
@@ -312,8 +312,8 @@ void QMFAnalysisConv(int *cTab, int *delay, int dIdx, int *uBuf) {
             dOff += 320;
         }
 
-        uBuf[0]  = u64lo.r.hi32;
-        uBuf[32] = u64hi.r.hi32;
+        uBuf[0]  = (int)(u64lo.w64 >> 32);
+        uBuf[32] = (int)(u64hi.w64 >> 32);
         uBuf++;
         dOff--;
     }
@@ -484,7 +484,7 @@ void QMFSynthesisConv(int *cPtr, int *delay, int dIdx, short *outbuf, int nChans
 
         dOff0++;
         dOff1--;
-        *outbuf = CLIPTOSHORT((sum64.r.hi32 + RND_VAL) >> FBITS_OUT_QMFS);
+        *outbuf = CLIPTOSHORT(((int)(sum64.w64 >> 32) + RND_VAL) >> FBITS_OUT_QMFS);
         outbuf += nChans;
     }
 }

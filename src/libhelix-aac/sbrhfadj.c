@@ -110,15 +110,19 @@ static void EstimateEnvelope(PSInfoSBR *psi, SBRHeader *sbrHdr, SBRGrid *sbrGrid
                 if energy is too big to fit in 32-bit word (> 2^31) scale down by power of 2
             */
             nScale = 0;
-            if (eCurr.r.hi32) {
-                nScale = (32 - CLZ(eCurr.r.hi32)) + 1;
-                t  = (int)(eCurr.r.lo32 >> nScale);		/* logical (unsigned) >> */
-                t |= eCurr.r.hi32 << (32 - nScale);
-            } else if (eCurr.r.lo32 >> 31) {
-                nScale = 1;
-                t  = (int)(eCurr.r.lo32 >> nScale);		/* logical (unsigned) >> */
-            } else {
-                t  = (int)eCurr.r.lo32;
+            {
+                int eCurrH = (int)(eCurr.w64 >> 32);
+                unsigned int eCurrL = (unsigned int)eCurr.w64;
+                if (eCurrH) {
+                    nScale = (32 - CLZ(eCurrH)) + 1;
+                    t  = (int)(eCurrL >> nScale);
+                    t |= eCurrH << (32 - nScale);
+                } else if (eCurrL >> 31) {
+                    nScale = 1;
+                    t  = (int)(eCurrL >> nScale);
+                } else {
+                    t  = (int)eCurrL;
+                }
             }
 
             invFact = invBandTab[(iEnd - iStart) - 1];
@@ -144,15 +148,19 @@ static void EstimateEnvelope(PSInfoSBR *psi, SBRHeader *sbrHdr, SBRGrid *sbrGrid
             }
 
             nScale = 0;
-            if (eCurr.r.hi32) {
-                nScale = (32 - CLZ(eCurr.r.hi32)) + 1;
-                t  = (int)(eCurr.r.lo32 >> nScale);		/* logical (unsigned) >> */
-                t |= eCurr.r.hi32 << (32 - nScale);
-            } else if (eCurr.r.lo32 >> 31) {
-                nScale = 1;
-                t  = (int)(eCurr.r.lo32 >> nScale);		/* logical (unsigned) >> */
-            } else {
-                t  = (int)eCurr.r.lo32;
+            {
+                int eCurrH = (int)(eCurr.w64 >> 32);
+                unsigned int eCurrL = (unsigned int)eCurr.w64;
+                if (eCurrH) {
+                    nScale = (32 - CLZ(eCurrH)) + 1;
+                    t  = (int)(eCurrL >> nScale);
+                    t |= eCurrH << (32 - nScale);
+                } else if (eCurrL >> 31) {
+                    nScale = 1;
+                    t  = (int)(eCurrL >> nScale);
+                } else {
+                    t  = (int)eCurrL;
+                }
             }
 
             invFact = invBandTab[(iEnd - iStart) - 1];
