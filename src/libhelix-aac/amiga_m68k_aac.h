@@ -8,12 +8,15 @@
     Design rules (see project task description):
       * Every asm optimisation has a C fallback.
       * Every asm optimisation is behind an explicit per-stage flag
-        (AMIGA_M68K_ASM_AAC_IMDCT / _DEQUANT / _STEREO / _HUFFMAN). The flags
-        only *enable* use of these helpers; the helpers themselves are only
-        compiled when we are actually building for a 68020+ target, so it is
-        always safe to define the flags on any platform.
+        (AMIGA_M68K_ASM_AAC_IMDCT / _DEQUANT / _STEREO / _HUFFMAN / _PNS /
+        _TNS). The flags only *enable* use of these helpers; the helpers
+        themselves are only compiled when we are actually building for a
+        68020+ target, so it is always safe to define the flags on any
+        platform.
       * The helpers are bit-exact replacements for the portable C code, so
-        decoder output is unchanged (no TNS / format / ABI impact).
+        decoder output is unchanged (no format / ABI impact). TNS's own
+        filter kernel (tns.c) is covered too, via AMIGA_M68K_ASM_AAC_TNS -
+        see that file's TNS_MAC64/TNSMulShift32.
 
     Nothing in this header changes any struct layout, symbol, or calling
     convention, so it does not affect the decoder module ABI or the position

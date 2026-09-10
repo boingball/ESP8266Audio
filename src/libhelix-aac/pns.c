@@ -45,6 +45,21 @@
 
 #include "coder.h"
 #include "assembly.h"
+#include "amiga_m68k_aac.h"
+
+/*  InvRootR/ScaleNoiseVector's fixed-point Newton's-method solve is entirely
+    MULSHIFT32 calls. When AMIGA_M68K_ASM_AAC_PNS is enabled on a 68020+
+    target this routes those multiplies to the single-instruction MULS.L
+    helper instead of the portable (long long)x*y>>32 fallback - the same
+    shape and same reasoning as dequant.c's AMIGA_M68K_ASM_AAC_DEQUANT (PNS
+    is called once per PNS-flagged scalefactor band, every frame that uses
+    it - a standard AAC-LC tool, not a corner case). Bit-exact and
+    big-endian safe (the helper only touches data registers), so generated
+    noise is unchanged. Portable C MULSHIFT32 is used otherwise. */
+#if defined(AMIGA_M68K_ASM_AAC_PNS) && defined(AAC_M68K_HAVE_ASM)
+#undef MULSHIFT32
+#define MULSHIFT32(x, y)	AAC_M68K_MULSHIFT32((x), (y))
+#endif
 
 /**************************************************************************************
     Function:    Get32BitVal

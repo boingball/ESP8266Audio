@@ -45,6 +45,28 @@
 
 #include "coder.h"
 #include "assembly.h"
+#include "amiga_m68k_aac.h"
+
+/*  TNS's LPC filter kernel (DecodeLPCCoefs/FilterRegion below) is the widest
+    fixed-point math in this decoder: a 32x32->64 multiply-shift and, in
+    FilterRegion's inner loop, up to `order` 32x32->64 multiply-accumulates
+    per filtered sample - run for every TNS-active band, every frame that
+    uses TNS (a standard AAC-LC tool many broadcast encoders enable, not a
+    corner case). Unlike every other AAC file in this decoder these calls
+    were never routed through the generic MULSHIFT32 macro (TNS defines its
+    own TNSMulShift32, and FilterRegion hand-inlines the accumulation), so
+    they got no coverage from the AMIGA_M68K_ASM_AAC_* treatment those files
+    already have. When AMIGA_M68K_ASM_AAC_TNS is enabled on a 68020+ target,
+    route both through the same single-instruction MULS.L helpers
+    (AAC_M68K_MULSHIFT32/AAC_M68K_MADD64) dequant.c etc. already use instead
+    of the portable long long fallback. Bit-exact and big-endian safe (the
+    helpers only touch data registers), so filtered coefficients are
+    unchanged. Portable C is used otherwise. */
+#if defined(AMIGA_M68K_ASM_AAC_TNS) && defined(AAC_M68K_HAVE_ASM)
+#define TNS_MAC64(sum, x, y)	AAC_M68K_MADD64((sum), (x), (y))
+#else
+#define TNS_MAC64(sum, x, y)	((sum) + (long long)(x) * (long long)(y))
+#endif
 
 #define FBITS_LPC_COEFS	20
 
@@ -148,7 +170,11 @@ static void DecodeLPCCoefs(int order, int res, signed char *filtCoef, int *a, in
  */
 static int TNSMulShift32(int x, int y)
 {
+#if defined(AMIGA_M68K_ASM_AAC_TNS) && defined(AAC_M68K_HAVE_ASM)
+    return AAC_M68K_MULSHIFT32(x, y);
+#else
     return (int)(((long long)x * (long long)y) >> 32);
+#endif
 }
 
 static int TNSQ20ToInt(long long v)
@@ -185,14 +211,14 @@ static int FilterRegion(int size, int dir, int order, int *audioCoef, int *a, in
          * Use multiply instead of left-shifting a possibly negative int.
          */
         y = *audioCoef;
-        sum64 = (long long)y * (1LL << FBITS_LPC_COEFS);
+        sum64 = TNS_MAC64(0, y, 1 << FBITS_LPC_COEFS);
 
         /* sum64 += (a1*y[n-1] + a2*y[n-2] + ... + a[order-1]*y[n-(order-1)]) */
         for (j = order - 1; j > 0; j--) {
-            sum64 += (long long)hist[j] * (long long)a[j];
+            sum64 = TNS_MAC64(sum64, hist[j], a[j]);
             hist[j] = hist[j - 1];
         }
-        sum64 += (long long)hist[0] * (long long)a[0];
+        sum64 = TNS_MAC64(sum64, hist[0], a[0]);
 
         y = TNSClipQ20ToInt(sum64);
 
