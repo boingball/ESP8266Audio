@@ -45,6 +45,17 @@
 
 #include "coder.h"
 #include "assembly.h"
+#include "amiga_m68k_aac.h"
+
+/*  Stage 1: AAC IMDCT / transform path (SBR window + overlap-add).
+    When AAC_ENABLE_SBR is on (the default) the window/overlap MAC loops used by
+    IMDCT live here in DecWindowOverlap*NoClip rather than in imdct.c. Route
+    MULSHIFT32 to the MULS.L helper when AMIGA_M68K_ASM_AAC_IMDCT is enabled on a
+    68020+ target. Bit-exact, so overlap-add output is unchanged. */
+#if defined(AMIGA_M68K_ASM_AAC_IMDCT) && defined(AAC_M68K_HAVE_ASM)
+#undef MULSHIFT32
+#define MULSHIFT32(x, y)	AAC_M68K_MULSHIFT32((x), (y))
+#endif
 
 /**************************************************************************************
     Function:    DecWindowOverlapNoClip

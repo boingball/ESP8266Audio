@@ -45,6 +45,19 @@
 
 #include "coder.h"
 #include "assembly.h"
+#include "amiga_m68k_aac.h"
+
+/*  Stage 3: AAC stereo processing.
+    Intensity stereo rescales the right channel from the left via MULSHIFT32;
+    mid/side and the channel combine are add/shift work. When
+    AMIGA_M68K_ASM_AAC_STEREO is enabled on a 68020+ target the intensity
+    multiply uses the single-instruction MULS.L helper. Bit-exact and
+    big-endian safe, so the mono/stereo channel handling and output values are
+    unchanged. Portable C MULSHIFT32 is used otherwise. */
+#if defined(AMIGA_M68K_ASM_AAC_STEREO) && defined(AAC_M68K_HAVE_ASM)
+#undef MULSHIFT32
+#define MULSHIFT32(x, y)	AAC_M68K_MULSHIFT32((x), (y))
+#endif
 
 /*  pow14[0][i] = -pow(2, i/4.0)
     pow14[1][i] = +pow(2, i/4.0)

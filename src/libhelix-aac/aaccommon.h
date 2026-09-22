@@ -153,6 +153,9 @@ typedef struct _AACDecInfo {
     int pnsUsed;
     int frameCount;
 
+    /* AACSetOutputDecimation(): 0/1 = full rate, 2 or 4 = reduced-size IMDCT */
+    int outputDecim;
+
 } AACDecInfo;
 
 /* decoder functions which must be implemented for each platform */

@@ -184,6 +184,10 @@ void AACGetLastFrameInfo(HAACDecoder hAACDecoder, AACFrameInfo *aacFrameInfo) {
         aacFrameInfo->sampRateOut =   aacDecInfo->sampRate * (aacDecInfo->sbrEnabled ? 2 : 1);
         aacFrameInfo->bitsPerSample = 16;
         aacFrameInfo->outputSamps =   aacDecInfo->nChans * AAC_MAX_NSAMPS * (aacDecInfo->sbrEnabled ? 2 : 1);
+        if (aacDecInfo->outputDecim > 1) {
+            aacFrameInfo->sampRateOut /= aacDecInfo->outputDecim;
+            aacFrameInfo->outputSamps /= aacDecInfo->outputDecim;
+        }
         aacFrameInfo->profile =       aacDecInfo->profile;
         aacFrameInfo->tnsUsed =       aacDecInfo->tnsUsed;
         aacFrameInfo->pnsUsed =       aacDecInfo->pnsUsed;
@@ -264,6 +268,45 @@ int AACFlushCodec(HAACDecoder hAACDecoder) {
     FlushCodecSBR(aacDecInfo);
 #endif
 
+    return ERR_AAC_NONE;
+}
+
+/**************************************************************************************
+    Function:    AACSetOutputDecimation
+
+    Description: decode at 1/2 or 1/4 of the stream's sample rate by running the
+                  inverse transform at reduced size (see IMDCTDecim in imdct.c)
+
+    Inputs:      valid AAC decoder instance pointer (HAACDecoder)
+                decimation factor: 1 (full rate), 2 or 4
+
+    Outputs:     updated codec state; overlap buffers flushed if the factor changed
+
+    Return:      0 if successful, ERR_AAC_UNKNOWN_DECIM if the factor is not
+                  supported by this build (the decoder is left unchanged)
+ **************************************************************************************/
+int AACSetOutputDecimation(HAACDecoder hAACDecoder, int factor) {
+    AACDecInfo *aacDecInfo = (AACDecInfo *)hAACDecoder;
+    int current;
+
+    if (!aacDecInfo) {
+        return ERR_AAC_NULL_POINTER;
+    }
+#if defined(AAC_ENABLE_DECIM) && !defined(AAC_ENABLE_SBR)
+    if (factor != 1 && factor != 2 && factor != 4) {
+        return ERR_AAC_UNKNOWN_DECIM;
+    }
+#else
+    if (factor != 1) {
+        return ERR_AAC_UNKNOWN_DECIM;
+    }
+#endif
+    current = aacDecInfo->outputDecim > 1 ? aacDecInfo->outputDecim : 1;
+    if (factor != current) {
+        /* overlap samples are stored at the old transform size */
+        FlushCodec(aacDecInfo);
+        aacDecInfo->outputDecim = factor;
+    }
     return ERR_AAC_NONE;
 }
 

@@ -73,6 +73,16 @@
     if (icsInfo->winSequence == 2) {
         /* short block */
         icsInfo->maxSFB =     GetBits(bsi, 4);
+        /* maxSFB is a raw 4-bit bitstream field (0-15) with no guarantee it
+         * fits the real scalefactor-band count for this sample rate. An
+         * over-large value drives DecodeSectionData/DecodeScaleFactors past
+         * the end of sfbCodeBook/scaleFactors and the flat sfBandTabShort
+         * boundary table, corrupting adjacent heap/exec structures on
+         * AmigaOS (no memory protection) -- observed as a full system
+         * freeze on real hardware when playing a crafted/corrupt AAC
+         * stream. Clamp to the table's real max for this sample rate. */
+        if (icsInfo->maxSFB > (int)sfBandTotalShort[sampRateIdx])
+            icsInfo->maxSFB = (int)sfBandTotalShort[sampRateIdx];
         icsInfo->sfGroup =    GetBits(bsi, 7);
         icsInfo->numWinGroup =    1;
         icsInfo->winGroupLen[0] = 1;
@@ -89,6 +99,10 @@
     } else {
         /* long block */
         icsInfo->maxSFB =               GetBits(bsi, 6);
+        /* Same issue as the short-block case above, worse here since this
+         * is a 6-bit field (0-63) against a real max of 51. */
+        if (icsInfo->maxSFB > (int)sfBandTotalLong[sampRateIdx])
+            icsInfo->maxSFB = (int)sfBandTotalLong[sampRateIdx];
         icsInfo->predictorDataPresent = GetBits(bsi, 1);
         if (icsInfo->predictorDataPresent) {
             icsInfo->predictorReset =   GetBits(bsi, 1);
