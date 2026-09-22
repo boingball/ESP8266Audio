@@ -56,8 +56,23 @@
 #define MULSHIFT32(x, y)	AAC_M68K_MULSHIFT32((x), (y))
 #endif
 
+#ifdef AAC_ENABLE_DECIM
+/*  Indices 2-5 are the reduced sizes AACSetOutputDecimation() uses (see
+    coder.h). PostMultiply's cos1sin1tab is shared: it holds angles in steps of
+    pi/1024, and a size-nmdct transform needs steps of pi/nmdct, i.e. skips
+    2*1024/nmdct - 1 ints between pairs. The pre-twiddles come from their own
+    generated table (gen_decim_tabs.py).
+*/
+static const int nmdctTab[NUM_IMDCT_SIZES + NUM_DECIM_SIZES] PROGMEM = {128, 1024, 64, 512, 32, 256};
+static const int postSkip[NUM_IMDCT_SIZES + NUM_DECIM_SIZES] PROGMEM = {15, 1, 31, 3, 63, 7};
+#define PREMUL_TAB(tabidx) ((tabidx) < NUM_IMDCT_SIZES ? \
+    cos4sin4tab + cos4sin4tabOffset[tabidx] : \
+    cos4sin4tabDecim + decimTabOffset[(tabidx) - NUM_IMDCT_SIZES])
+#else
 static const int nmdctTab[NUM_IMDCT_SIZES] PROGMEM = {128, 1024};
 static const int postSkip[NUM_IMDCT_SIZES] PROGMEM = {15, 1};
+#define PREMUL_TAB(tabidx) (cos4sin4tab + cos4sin4tabOffset[tabidx])
+#endif
 
 /**************************************************************************************
     Function:    PreMultiply
@@ -84,7 +99,7 @@ static void PreMultiply(int tabidx, int *zbuf1) {
 
     nmdct = nmdctTab[tabidx];
     zbuf2 = zbuf1 + nmdct - 1;
-    csptr = cos4sin4tab + cos4sin4tabOffset[tabidx];
+    csptr = PREMUL_TAB(tabidx);
 
     /* whole thing should fit in registers - verify that compiler does this */
     for (i = nmdct >> 2; i != 0; i--) {
@@ -203,7 +218,7 @@ static void PostMultiply(int tabidx, int *fft1) {
 
     nmdct = nmdctTab[tabidx];
     zbuf2 = zbuf1 + nmdct - 1;
-    csptr = cos4sin4tab + cos4sin4tabOffset[tabidx];
+    csptr = PREMUL_TAB(tabidx);
 
     /* whole thing should fit in registers - verify that compiler does this */
     for (i = nmdct >> 2; i != 0; i--) {

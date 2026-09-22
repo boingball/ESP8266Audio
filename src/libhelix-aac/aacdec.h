@@ -134,6 +134,7 @@ enum {
     ERR_AAC_SBR_SINGLERATE_UNSUPPORTED    = -21,
 
     ERR_AAC_RAWBLOCK_PARAMS               = -22,
+    ERR_AAC_UNKNOWN_DECIM                 = -23,
 
     ERR_AAC_UNKNOWN						= -9999
 };
@@ -162,6 +163,16 @@ int AACFindSyncWord(unsigned char *buf, int nBytes);
 void AACGetLastFrameInfo(HAACDecoder hAACDecoder, AACFrameInfo *aacFrameInfo);
 int AACSetRawBlockParams(HAACDecoder hAACDecoder, int copyLast, AACFrameInfo *aacFrameInfo);
 int AACFlushCodec(HAACDecoder hAACDecoder);
+
+/* Output decimation: factor 2 or 4 runs the inverse transform at 1/2 or 1/4
+ * size and delivers PCM at sampRate/factor (outputSamps and sampRateOut in
+ * AACFrameInfo follow), band-limited to the new Nyquist; 1 restores full
+ * rate. Changing it flushes the overlap buffers, so set it before decoding.
+ * Returns 0, or ERR_AAC_UNKNOWN_DECIM when the factor is unsupported or the
+ * library was built without AAC_ENABLE_DECIM (or with AAC_ENABLE_SBR) - the
+ * caller should then keep full-rate output.
+ */
+int AACSetOutputDecimation(HAACDecoder hAACDecoder, int factor);
 
 #ifdef HELIX_CONFIG_AAC_GENERATE_TRIGTABS_FLOAT
 int AACInitTrigtabsFloat(void);

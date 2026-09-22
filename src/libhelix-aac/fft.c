@@ -57,9 +57,24 @@
 #define MULSHIFT32(x, y)	AAC_M68K_MULSHIFT32((x), (y))
 #endif
 
+#ifdef AAC_ENABLE_DECIM
+/*  Indices 2-5: the half/quarter-size DCT4s (see coder.h). R4FFT() below is
+    already generic in the size - odd log2 gets the radix-8 first pass, even
+    the radix-4 one - and twidTabOdd/twidTabEven hold the twiddles of every
+    radix-4 stage up to 512/256 points, so the smaller sizes use prefixes of
+    them. Only the bit-reverse tables are new.
+*/
+#define NUM_FFT_SIZES	6
+static const int nfftTab[NUM_FFT_SIZES] PROGMEM = {64, 512, 32, 256, 16, 128};
+static const int nfftlog2Tab[NUM_FFT_SIZES] PROGMEM = {6, 9, 5, 8, 4, 7};
+#define BITREV_TAB(tabidx) ((tabidx) < 2 ? bitrevtab + bitrevtabOffset[tabidx] : \
+    bitrevtabDecim + bitrevtabDecimOffset[(tabidx) - 2])
+#else
 #define NUM_FFT_SIZES	2
 static const int nfftTab[NUM_FFT_SIZES] PROGMEM = {64, 512};
 static const int nfftlog2Tab[NUM_FFT_SIZES] PROGMEM = {6, 9};
+#define BITREV_TAB(tabidx) (bitrevtab + bitrevtabOffset[tabidx])
+#endif
 
 #define SQRT1_2 0x5a82799a	/* sqrt(1/2) in Q31 */
 
@@ -81,7 +96,7 @@ static const int nfftlog2Tab[NUM_FFT_SIZES] PROGMEM = {6, 9};
 /*__attribute__ ((section (".data"))) */ static void BitReverse(int *inout, int tabidx) {
     int *part0, *part1;
     int a, b, t, t1;
-    const unsigned char* tab = bitrevtab + bitrevtabOffset[tabidx];
+    const unsigned char* tab = BITREV_TAB(tabidx);
     int nbits = nfftlog2Tab[tabidx];
 
     part0 = inout;

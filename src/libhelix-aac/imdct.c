@@ -507,6 +507,404 @@
 
 #endif	/* !AAC_ENABLE_SBR */
 
+#if defined(AAC_ENABLE_DECIM) && !defined(AAC_ENABLE_SBR)
+
+/**************************************************************************************
+    Reduced-size inverse transform (AACSetOutputDecimation, factor 2 or 4)
+
+    An IMDCT of size N/d fed with only the lowest N/(2d) spectral coefficients
+    gives, sample for sample, the full-size IMDCT of the band-limited spectrum
+    evaluated at n = d*m + (d-1)/2 - the full kernel
+    cos(2pi/N (n + n0)(k + 1/2)), n0 = (N/2 + 1)/2, becomes exactly the
+    size-N/d kernel at that n. The sine window resamples the same way (and
+    the half/quarter-length KBD windows keep their Princen-Bradley property),
+    so windowing + overlap-add at the reduced size produces PCM at 1/d of the
+    rate directly: an ideal brick-wall low-pass at the new Nyquist and a
+    constant (d-1)/2-input-sample time offset, for roughly 1/d of the
+    transform work. The
+    discarded upper coefficients are exactly the band that cannot be
+    represented at the lower rate anyway - dropping d-1 of every d samples
+    after a full-size decode would alias that band down instead.
+
+    The DCT4 tables for the reduced sizes carry an extra 1/d factor (see
+    gen_decim_tabs.py), so the output scale - and the fixed-point format, and
+    everything below - is unchanged from the full-size path.
+
+    The four window/overlap routines are the full-size ones above with every
+    size constant expressed in L (long nmdct: 512/256), S (short nmdct: 64/32)
+    and Q = (L - S) / 2 (448 at full size), and the window tables passed in.
+ **************************************************************************************/
+
+static void DecWindowOverlapDecim(int *buf0, int *over0, short *pcm0, int nChans, const int *wndCurr, const int *wndPrev, int L) {
+    int in, w0, w1, f0, f1;
+    int *buf1, *over1;
+    short *pcm1;
+
+    buf0 += (L >> 1);
+    buf1  = buf0  - 1;
+    pcm1  = pcm0 + (L - 1) * nChans;
+    over1 = over0 + L - 1;
+
+    if (wndCurr == wndPrev) {
+        do {
+            w0 = *wndPrev++;
+            w1 = *wndPrev++;
+            in = *buf0++;
+
+            f0 = MULSHIFT32(w0, in);
+            f1 = MULSHIFT32(w1, in);
+
+            in = *over0;
+            *pcm0 = CLIPTOSHORT((in - f0 + RND_VAL) >> FBITS_OUT_IMDCT);
+            pcm0 += nChans;
+
+            in = *over1;
+            *pcm1 = CLIPTOSHORT((in + f1 + RND_VAL) >> FBITS_OUT_IMDCT);
+            pcm1 -= nChans;
+
+            in = *buf1--;
+            *over1-- = MULSHIFT32(w0, in);
+            *over0++ = MULSHIFT32(w1, in);
+        } while (over0 < over1);
+    } else {
+        do {
+            w0 = *wndPrev++;
+            w1 = *wndPrev++;
+            in = *buf0++;
+
+            f0 = MULSHIFT32(w0, in);
+            f1 = MULSHIFT32(w1, in);
+
+            in = *over0;
+            *pcm0 = CLIPTOSHORT((in - f0 + RND_VAL) >> FBITS_OUT_IMDCT);
+            pcm0 += nChans;
+
+            in = *over1;
+            *pcm1 = CLIPTOSHORT((in + f1 + RND_VAL) >> FBITS_OUT_IMDCT);
+            pcm1 -= nChans;
+
+            w0 = *wndCurr++;
+            w1 = *wndCurr++;
+            in = *buf1--;
+
+            *over1-- = MULSHIFT32(w0, in);
+            *over0++ = MULSHIFT32(w1, in);
+        } while (over0 < over1);
+    }
+}
+
+static void DecWindowOverlapLongStartDecim(int *buf0, int *over0, short *pcm0, int nChans, const int *wndCurr, const int *wndPrev, int L, int S) {
+    int i, in, w0, w1, f0, f1;
+    int *buf1, *over1;
+    short *pcm1;
+
+    buf0 += (L >> 1);
+    buf1  = buf0  - 1;
+    pcm1  = pcm0 + (L - 1) * nChans;
+    over1 = over0 + L - 1;
+
+    i = (L - S) >> 1;
+    do {
+        w0 = *wndPrev++;
+        w1 = *wndPrev++;
+        in = *buf0++;
+
+        f0 = MULSHIFT32(w0, in);
+        f1 = MULSHIFT32(w1, in);
+
+        in = *over0;
+        *pcm0 = CLIPTOSHORT((in - f0 + RND_VAL) >> FBITS_OUT_IMDCT);
+        pcm0 += nChans;
+
+        in = *over1;
+        *pcm1 = CLIPTOSHORT((in + f1 + RND_VAL) >> FBITS_OUT_IMDCT);
+        pcm1 -= nChans;
+
+        in = *buf1--;
+
+        *over1-- = 0;
+        *over0++ = in >> 1;
+    } while (--i);
+
+    do {
+        w0 = *wndPrev++;
+        w1 = *wndPrev++;
+        in = *buf0++;
+
+        f0 = MULSHIFT32(w0, in);
+        f1 = MULSHIFT32(w1, in);
+
+        in = *over0;
+        *pcm0 = CLIPTOSHORT((in - f0 + RND_VAL) >> FBITS_OUT_IMDCT);
+        pcm0 += nChans;
+
+        in = *over1;
+        *pcm1 = CLIPTOSHORT((in + f1 + RND_VAL) >> FBITS_OUT_IMDCT);
+        pcm1 -= nChans;
+
+        w0 = *wndCurr++;
+        w1 = *wndCurr++;
+        in = *buf1--;
+
+        *over1-- = MULSHIFT32(w0, in);
+        *over0++ = MULSHIFT32(w1, in);
+    } while (over0 < over1);
+}
+
+static void DecWindowOverlapLongStopDecim(int *buf0, int *over0, short *pcm0, int nChans, const int *wndCurr, const int *wndPrev, int L, int S) {
+    int i, in, w0, w1, f0, f1;
+    int *buf1, *over1;
+    short *pcm1;
+
+    buf0 += (L >> 1);
+    buf1  = buf0  - 1;
+    pcm1  = pcm0 + (L - 1) * nChans;
+    over1 = over0 + L - 1;
+
+    i = (L - S) >> 1;
+    do {
+        in = *buf0++;
+        f1 = in >> 1;
+
+        in = *over0;
+        *pcm0 = CLIPTOSHORT((in + RND_VAL) >> FBITS_OUT_IMDCT);
+        pcm0 += nChans;
+
+        in = *over1;
+        *pcm1 = CLIPTOSHORT((in + f1 + RND_VAL) >> FBITS_OUT_IMDCT);
+        pcm1 -= nChans;
+
+        w0 = *wndCurr++;
+        w1 = *wndCurr++;
+        in = *buf1--;
+
+        *over1-- = MULSHIFT32(w0, in);
+        *over0++ = MULSHIFT32(w1, in);
+    } while (--i);
+
+    do {
+        w0 = *wndPrev++;
+        w1 = *wndPrev++;
+        in = *buf0++;
+
+        f0 = MULSHIFT32(w0, in);
+        f1 = MULSHIFT32(w1, in);
+
+        in = *over0;
+        *pcm0 = CLIPTOSHORT((in - f0 + RND_VAL) >> FBITS_OUT_IMDCT);
+        pcm0 += nChans;
+
+        in = *over1;
+        *pcm1 = CLIPTOSHORT((in + f1 + RND_VAL) >> FBITS_OUT_IMDCT);
+        pcm1 -= nChans;
+
+        w0 = *wndCurr++;
+        w1 = *wndCurr++;
+        in = *buf1--;
+
+        *over1-- = MULSHIFT32(w0, in);
+        *over0++ = MULSHIFT32(w1, in);
+    } while (over0 < over1);
+}
+
+/*  buf0 holds the eight short blocks back to back, S samples each (IMDCTDecim
+    compacts them), exactly like the full-size layout at 128. */
+static void DecWindowOverlapShortDecim(int *buf0, int *over0, short *pcm0, int nChans, const int *wndCurr, const int *wndPrev, int L, int S) {
+    int i, in, w0, w1, f0, f1;
+    int *buf1, *over1;
+    short *pcm1;
+    const int Q = (L - S) >> 1;
+    const int H = S >> 1;
+
+    /* pcm[0 .. Q-1] = overlap */
+    i = Q;
+    do {
+        f0 = *over0++;
+        f1 = *over0++;
+        *pcm0 = CLIPTOSHORT((f0 + RND_VAL) >> FBITS_OUT_IMDCT);	pcm0 += nChans;
+        *pcm0 = CLIPTOSHORT((f1 + RND_VAL) >> FBITS_OUT_IMDCT);	pcm0 += nChans;
+        i -= 2;
+    } while (i);
+
+    /* block 0 against the previous frame's overlap */
+    pcm1  = pcm0 + (S - 1) * nChans;
+    over1 = over0 + S - 1;
+    buf0 += H;
+    buf1  = buf0  - 1;
+    do {
+        w0 = *wndPrev++;
+        w1 = *wndPrev++;
+        in = *buf0++;
+
+        f0 = MULSHIFT32(w0, in);
+        f1 = MULSHIFT32(w1, in);
+
+        in = *over0;
+        *pcm0 = CLIPTOSHORT((in - f0 + RND_VAL) >> FBITS_OUT_IMDCT);
+        pcm0 += nChans;
+
+        in = *over1;
+        *pcm1 = CLIPTOSHORT((in + f1 + RND_VAL) >> FBITS_OUT_IMDCT);
+        pcm1 -= nChans;
+
+        w0 = *wndCurr++;
+        w1 = *wndCurr++;
+        in = *buf1--;
+
+        *over1-- = MULSHIFT32(w0, in);
+        *over0++ = MULSHIFT32(w1, in);
+    } while (over0 < over1);
+
+    /* blocks 1-3 */
+    for (i = 0; i < 3; i++) {
+        pcm0 += H * nChans;
+        pcm1 = pcm0 + (S - 1) * nChans;
+        over0 += H;
+        over1 = over0 + S - 1;
+        buf0 += H;
+        buf1 = buf0 - 1;
+        wndCurr -= S;
+
+        do {
+            w0 = *wndCurr++;
+            w1 = *wndCurr++;
+            in = *buf0++;
+
+            f0 = MULSHIFT32(w0, in);
+            f1 = MULSHIFT32(w1, in);
+
+            in  = *(over0 - S);
+            in += *(over0 + 0);
+            *pcm0 = CLIPTOSHORT((in - f0 + RND_VAL) >> FBITS_OUT_IMDCT);
+            pcm0 += nChans;
+
+            in  = *(over1 - S);
+            in += *(over1 + 0);
+            *pcm1 = CLIPTOSHORT((in + f1 + RND_VAL) >> FBITS_OUT_IMDCT);
+            pcm1 -= nChans;
+
+            in = *buf1--;
+            *over1-- = MULSHIFT32(w0, in);
+            *over0++ = MULSHIFT32(w1, in);
+        } while (over0 < over1);
+    }
+
+    /* last H output samples (block 3/4 boundary); start the new overlap */
+    pcm0 += H * nChans;
+    over0 -= Q + 3 * S;			/* points at overlap[H] */
+    over1 = over0 + S - 1;
+    buf0 += H;
+    buf1 = buf0 - 1;
+    wndCurr -= S;
+    do {
+        w0 = *wndCurr++;
+        w1 = *wndCurr++;
+        in = *buf0++;
+
+        f0 = MULSHIFT32(w0, in);
+        f1 = MULSHIFT32(w1, in);
+
+        in  = *(over0 + Q + 3 * S - H);	/* from last short block */
+        in += *(over0 + Q + 4 * S - H);	/* from last full frame */
+        *pcm0 = CLIPTOSHORT((in - f0 + RND_VAL) >> FBITS_OUT_IMDCT);
+        pcm0 += nChans;
+
+        in  = *(over1 + Q + 3 * S - H);
+        *(over1 - S) = in + f1;
+
+        in = *buf1--;
+        *over1-- = MULSHIFT32(w0, in);
+        *over0++ = MULSHIFT32(w1, in);
+    } while (over0 < over1);
+
+    /* blocks 4-7: overlap only */
+    for (i = 0; i < 3; i++) {
+        over0 += H;
+        over1 = over0 + S - 1;
+        buf0 += H;
+        buf1 = buf0 - 1;
+        wndCurr -= S;
+        do {
+            w0 = *wndCurr++;
+            w1 = *wndCurr++;
+            in = *buf0++;
+
+            f0 = MULSHIFT32(w0, in);
+            f1 = MULSHIFT32(w1, in);
+
+            *(over0 - S) -= f0;
+            *(over1 - S) += f1;
+
+            in = *buf1--;
+            *over1-- = MULSHIFT32(w0, in);
+            *over0++ = MULSHIFT32(w1, in);
+        } while (over0 < over1);
+    }
+
+    /* over[L - Q .. L-1] = 0 */
+    i = Q;
+    over0 += H;
+    do {
+        *over0++ = 0;
+        *over0++ = 0;
+        *over0++ = 0;
+        *over0++ = 0;
+        i -= 4;
+    } while (i);
+}
+
+static const int *DecimWindow(int winShape, int tabidx) {
+    return (winShape == 1 ? kbdWindowDecim : sinWindowDecim) + decimTabOffset[tabidx - NUM_IMDCT_SIZES];
+}
+
+static void IMDCTDecim(PSInfoBase *psi, ICSInfo *icsInfo, int ch, int chOut, short *outbuf, int nChans, int decim) {
+    int i, j, L, S, tabL, tabS, prevShape, currShape;
+    int *coef = psi->coef[ch];
+
+    if (decim == 2) {
+        tabL = DCT4_IDX_LONG_HALF;
+        tabS = DCT4_IDX_SHORT_HALF;
+    } else {
+        tabL = DCT4_IDX_LONG_QUARTER;
+        tabS = DCT4_IDX_SHORT_QUARTER;
+    }
+    L = AAC_MAX_NSAMPS / decim;
+    S = (AAC_MAX_NSAMPS / 8) / decim;
+    prevShape = psi->prevWinShape[chOut];
+    currShape = icsInfo->winShape;
+
+    if (icsInfo->winSequence == 2) {
+        /* each short block's lowest S coefficients, then pack the blocks at
+           stride S (block i lands wholly below where block i started, so
+           this never overwrites anything still to be read) */
+        for (i = 0; i < 8; i++) {
+            DCT4(tabS, coef + i * 128, psi->gbCurrent[ch]);
+            if (i) {
+                for (j = 0; j < S; j++) {
+                    coef[i * S + j] = coef[i * 128 + j];
+                }
+            }
+        }
+        DecWindowOverlapShortDecim(coef, psi->overlap[chOut], outbuf, nChans,
+                                   DecimWindow(currShape, tabS), DecimWindow(prevShape, tabS), L, S);
+        return;
+    }
+
+    DCT4(tabL, coef, psi->gbCurrent[ch]);
+    if (icsInfo->winSequence == 0) {
+        DecWindowOverlapDecim(coef, psi->overlap[chOut], outbuf, nChans,
+                              DecimWindow(currShape, tabL), DecimWindow(prevShape, tabL), L);
+    } else if (icsInfo->winSequence == 1) {
+        DecWindowOverlapLongStartDecim(coef, psi->overlap[chOut], outbuf, nChans,
+                                       DecimWindow(currShape, tabS), DecimWindow(prevShape, tabL), L, S);
+    } else if (icsInfo->winSequence == 3) {
+        DecWindowOverlapLongStopDecim(coef, psi->overlap[chOut], outbuf, nChans,
+                                      DecimWindow(currShape, tabL), DecimWindow(prevShape, tabS), L, S);
+    }
+}
+
+#endif	/* AAC_ENABLE_DECIM && !AAC_ENABLE_SBR */
+
 /**************************************************************************************
     Function:    IMDCT
 
@@ -543,6 +941,17 @@ int IMDCT(AACDecInfo *aacDecInfo, int ch, int chOut, short *outbuf) {
     psi = (PSInfoBase *)(aacDecInfo->psInfoBase);
     icsInfo = (ch == 1 && psi->commonWin == 1) ? &(psi->icsInfo[0]) : &(psi->icsInfo[ch]);
     outbuf += chOut;
+
+#if defined(AAC_ENABLE_DECIM) && !defined(AAC_ENABLE_SBR)
+    if (aacDecInfo->outputDecim > 1) {
+        IMDCTDecim(psi, icsInfo, ch, chOut, outbuf, aacDecInfo->nChans, aacDecInfo->outputDecim);
+        aacDecInfo->rawSampleBuf[ch] = 0;
+        aacDecInfo->rawSampleBytes = 0;
+        aacDecInfo->rawSampleFBits = 0;
+        psi->prevWinShape[chOut] = icsInfo->winShape;
+        return 0;
+    }
+#endif
 
     /* optimized type-IV DCT (operates inplace) */
     if (icsInfo->winSequence == 2) {
